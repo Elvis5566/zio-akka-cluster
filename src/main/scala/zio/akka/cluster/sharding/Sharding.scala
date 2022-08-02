@@ -1,7 +1,5 @@
 package zio.akka.cluster.sharding
 
-import scala.concurrent.duration._
-import scala.reflect.ClassTag
 import akka.actor.{ Actor, ActorContext, ActorRef, ActorSystem, PoisonPill, Props, ReceiveTimeout }
 import akka.cluster.sharding.ShardRegion.Passivate
 import akka.cluster.sharding.{ ClusterSharding, ClusterShardingSettings }
@@ -10,6 +8,9 @@ import akka.util.Timeout
 import zio.akka.cluster.sharding
 import zio.akka.cluster.sharding.MessageEnvelope.{ MessagePayload, PassivatePayload, PoisonPillPayload }
 import zio.{ =!=, Ref, Runtime, Tag, Task, UIO, Unsafe, ZIO, ZLayer }
+
+import scala.concurrent.duration._
+import scala.reflect.ClassTag
 
 /**
  *  A `Sharding[M]` is able to send messages of type `M` to a sharded entity or to stop one.
@@ -41,7 +42,8 @@ object Sharding {
     name: String,
     onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit],
     numberOfShards: Int = 100,
-    askTimeout: FiniteDuration = 10.seconds
+    askTimeout: FiniteDuration = 10.seconds,
+    initState: State
   ): ZIO[ActorSystem with R, Throwable, Sharding[Msg]] =
     for {
       rts            <- ZIO.runtime[ActorSystem with R]
@@ -49,7 +51,7 @@ object Sharding {
       shardingRegion <- ZIO.attempt(
                           ClusterSharding(actorSystem).start(
                             typeName = name,
-                            entityProps = Props(new ShardEntity[R, Msg, State](rts)(onMessage)),
+                            entityProps = Props(new ShardEntity[R, Msg, State](rts, initState)(onMessage)),
                             settings = ClusterShardingSettings(actorSystem),
                             extractEntityId = {
                               case MessageEnvelope(entityId, payload) =>
@@ -129,19 +131,19 @@ object Sharding {
       )
   }
 
-  private[sharding] class ShardEntity[R, Msg, State: Tag](rts: Runtime[R])(
+  private[sharding] class ShardEntity[R, Msg, State: Tag](rts: Runtime[R], initState: State)(
     onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit]
   ) extends Actor {
 
-    val ref: Ref[Option[State]]                     =
+    val ref: Ref[State]                             =
       Unsafe.unsafeCompat { implicit u =>
-        rts.unsafe.run(Ref.make[Option[State]](None)).getOrThrow()
+        rts.unsafe.run(Ref.make[State](initState)).getOrThrow()
       }
     val actorContext: ActorContext                  = context
     val service: Entity.Service[State]              = new Entity.Service[State] {
       override def context: ActorContext                         = actorContext
       override def id: String                                    = actorContext.self.path.name
-      override def state: Ref[Option[State]]                     = ref
+      override def state: Ref[State]                             = ref
       override def stop: UIO[Unit]                               = ZIO.succeed(actorContext.stop(self))
       override def passivate: UIO[Unit]                          = ZIO.succeed(actorContext.parent ! Passivate(PoisonPill))
       override def passivateAfter(duration: Duration): UIO[Unit] = ZIO.succeed(actorContext.self ! SetTimeout(duration))
