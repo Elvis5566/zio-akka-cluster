@@ -41,9 +41,10 @@ object Sharding {
   def start[R, Msg, State: Tag](
     name: String,
     onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit],
+    initState: State,
+    preStartZIO: ZIO[Entity[State] with R, Throwable, Unit] = ZIO.unit,
     numberOfShards: Int = 100,
-    askTimeout: FiniteDuration = 10.seconds,
-    initState: State
+    askTimeout: FiniteDuration = 10.seconds
   ): ZIO[ActorSystem with R, Throwable, Sharding[Msg]] =
     for {
       rts            <- ZIO.runtime[ActorSystem with R]
@@ -51,7 +52,7 @@ object Sharding {
       shardingRegion <- ZIO.attempt(
                           ClusterSharding(actorSystem).start(
                             typeName = name,
-                            entityProps = Props(new ShardEntity[R, Msg, State](rts, initState)(onMessage)),
+                            entityProps = Props(new ShardEntity[R, Msg, State](rts, initState)(onMessage, preStartZIO)),
                             settings = ClusterShardingSettings(actorSystem),
                             extractEntityId = {
                               case MessageEnvelope(entityId, payload) =>
@@ -132,7 +133,8 @@ object Sharding {
   }
 
   private[sharding] class ShardEntity[R, Msg, State: Tag](rts: Runtime[R], initState: State)(
-    onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit]
+    onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit],
+    preStartZIO: ZIO[Entity[State] with R, Throwable, Unit]
   ) extends Actor {
 
     val ref: Ref[State]                             =
@@ -150,6 +152,13 @@ object Sharding {
       override def replyToSender[M](msg: M): Task[Unit]          = ZIO.attempt(actorContext.sender() ! msg)
     }
     val entity: ZLayer[Any, Nothing, Entity[State]] = ZLayer.succeed(service)
+
+    override def preStart(): Unit = {
+      Unsafe.unsafeCompat { implicit u =>
+        rts.unsafe.run(preStartZIO.provideSomeLayer[R](entity)).getOrThrow()
+      }
+      ()
+    }
 
     def receive: Receive = {
       case SetTimeout(duration) =>
