@@ -40,7 +40,7 @@ object Sharding {
    */
   def start[R, Msg, State: Tag](
     name: String,
-    onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit],
+    onMessage: Msg => ZIO[Entity[State] with R, Throwable, Unit],
     initState: State,
     preStartZIO: ZIO[Entity[State] with R, Throwable, Unit] = ZIO.unit,
     numberOfShards: Int = 100,
@@ -133,7 +133,7 @@ object Sharding {
   }
 
   private[sharding] class ShardEntity[R, Msg, State: Tag](rts: Runtime[R], initState: State)(
-    onMessage: Msg => ZIO[Entity[State] with R, Nothing, Unit],
+    onMessage: Msg => ZIO[Entity[State] with R, Throwable, Unit],
     preStartZIO: ZIO[Entity[State] with R, Throwable, Unit]
   ) extends Actor {
 
